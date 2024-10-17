@@ -1,8 +1,8 @@
-# LDAP Checker and Enumerator
+# LDAPire LDAP Enumeration Tool
 
 ## Description
 
-This Python script is designed to connect to an LDAP server (such as Active Directory), perform authentication, and enumerate users and groups. It attempts connections with and without SSL, supports both anonymous and authenticated binds, and outputs detailed information about users and groups to separate files.
+LDAPire is designed to connect to an LDAP server (such as Active Directory), perform authentication, and enumerate users and groups. It attempts connections with and without SSL, supports both anonymous and authenticated binds, and outputs detailed information about users and groups to separate files.
 
 ## Features
 
