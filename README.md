@@ -1,51 +1,91 @@
-# LDAP Connection Script
-This Python script attempts to connect to a Domain Controller (DC) using LDAP, first with SSL enabled and then, if SSL is not supported, it retries the connection without SSL. The script supports anonymous bind and can also authenticate with a username and password.
+# LDAP Checker and Enumerator
+
+## Description
+
+This Python script is designed to connect to an LDAP server (such as Active Directory), perform authentication, and enumerate users and groups. It attempts connections with and without SSL, supports both anonymous and authenticated binds, and outputs detailed information about users and groups to separate files.
 
 ## Features
-- SSL and Non-SSL Connection Attempts: The script initially attempts to connect using SSL. If that fails, it retries without SSL.
-- Anonymous and Authenticated Bind: Supports both anonymous LDAP binds and authenticated binds with a username and password.
-- Input Validation: Ensures that the IP address provided is in a valid format.
-- Logging: Logs connection attempts, successes, and failures to ldap_test.log for troubleshooting.
-- Secure Password Handling: Prompts for a password securely without echoing it to the console.
 
-### Prerequisites
+- Attempts LDAP connection with SSL first, then without SSL if SSL fails
+- Supports both anonymous and authenticated binds
+- Authenticates with provided credentials
+- Enumerates users and groups
+- Outputs basic (sAMAccountName) and detailed information for both users and groups
+- Input validation for IP address
+- Secure password handling
+- Comprehensive logging for troubleshooting
+
+## Requirements
+
 - Python 3.x
-- ldap3 library (Install via pip: pip install ldap3)
+- python3-ldap library
 
-### Usage
-**Command-Line Arguments**
-- dc_ip: The IP address of the Domain Controller.
-- -u, --user: (Optional) Username for LDAP authentication.
-- -p, --password: (Optional) Password for LDAP authentication.
-**Example Command**
-- `python3 ldap_connect.py 192.168.1.1 -u "DOMAIN\\username"`
-  - If no password is provided via the -p option, the script will prompt you to securely enter the password.
+## Installation
 
-**Example Command with Anonymous Bind**
-- `python3 ldap_connect.py 192.168.1.1`
+1. Ensure you have Python 3.x installed on your system.
+2. Install the required library:
 
-### Output
-- The script will print whether the connection was successful or not.
-- If successful, it will display the server's information.
-- Logs are stored in ldap_test.log.
+   ```
+   sudo apt-get install python3-ldap
+   ```
 
-### Script Details
-**Input Validation**
-The script checks the validity of the provided IP address using a regular expression.
+   Or if you're using pip:
 
-### Connection Attempts
-- SSL Connection: The script first tries to connect using SSL.
-- Non-SSL Connection: If the SSL connection fails, it retries without SSL.
+   ```
+   pip3 install python3-ldap
+   ```
 
-### Logging
-- Logs are created in `ldap_test.log`, capturing key events such as connection attempts, errors, and success messages.
+Note: The installation method may vary depending on your operating system and package manager. The above commands are typically used on Debian-based systems (like Ubuntu or Kali Linux).
 
-### Error Handling
-- The script handles common exceptions, such as connection errors, and provides feedback to the user. All exceptions are also logged.
+## Usage
 
-### Contributing
-- Contributions are welcome! Please open an issue or submit a pull request for any improvements or features you would like to add.
+Run the script from the command line with the following syntax:
 
-### License
-- This project is licensed under the MIT License. 
+```
+python3 pythonldap.py [DC_IP] [-u USERNAME] [-p PASSWORD]
+```
 
+- `[DC_IP]`: The IP address of the Domain Controller (required)
+- `-u USERNAME`: The username for LDAP authentication (optional)
+- `-p PASSWORD`: The password for LDAP authentication (optional)
+
+If you don't provide a username or password, the script will attempt an anonymous bind.
+
+Examples:
+- Authenticated bind: `python3 pythonldap.py 192.168.1.1 -u "DOMAIN\\username"`
+- Anonymous bind: `python3 pythonldap.py 192.168.1.1`
+
+If no password is provided via the -p option, the script will prompt you to securely enter the password.
+
+## Output Files
+
+The script generates four output files:
+
+1. `usersLdap.txt`: List of user sAMAccountNames
+2. `usersLdap_detailed.txt`: Detailed information about each user
+3. `groupsLdap.txt`: List of group sAMAccountNames
+4. `groupsLdap_detailed.txt`: Detailed information about each group
+
+## Logging
+
+Logs are created in `ldap_test.log`, capturing key events such as connection attempts, errors, and success messages.
+
+## Security Note
+
+This script is intended for authorized use only. Ensure you have permission to perform LDAP queries on the target server before using this tool.
+
+## Disclaimer
+
+This tool is for educational and authorized testing purposes only. The authors are not responsible for any misuse or damage caused by this program.
+
+## Contributing
+
+Contributions, issues, and feature requests are welcome. Please open an issue or submit a pull request for any improvements or features you would like to add.
+
+## License
+
+This project is licensed under the MIT License.
+
+## Author
+
+Bloodstiller
