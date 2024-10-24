@@ -36,13 +36,34 @@ password = args.password
 if not password and user:
     password = getpass.getpass("Enter password: ")
 
-# Function to attempt LDAP connection
+def get_domain_from_dc_ip(dc_ip):
+    try:
+        import socket
+        domain = socket.gethostbyaddr(dc_ip)[0]
+        return '.'.join(domain.split('.')[1:])  # Remove the hostname part
+    except:
+        return None
+
+def construct_user_string(user, dc_ip):
+    if '\\' in user or ',' in user:  # Already in DOMAIN\user or DN format
+        return user
+    
+    domain = get_domain_from_dc_ip(dc_ip)
+    if domain:
+        return f"{domain}\\{user}"
+    else:
+        return user  # Fallback to just the username if domain can't be determined
+
 def attempt_connection(server, use_ssl, user, password):
     protocol = "ldaps" if use_ssl else "ldap"
     port = 636 if use_ssl else 389
     try:
         s = Server(server, port=port, use_ssl=use_ssl, get_info=ALL)
-        c = Connection(s, user, password, auto_bind=True)
+        if user and password:
+            user_string = construct_user_string(user, server)
+            c = Connection(s, user=user_string, password=password, authentication='SIMPLE', auto_bind=True)
+        else:
+            c = Connection(s, auto_bind=True)
         return s, c, True
     except LDAPException as e:
         logging.error(f"Error connecting to the server with {protocol}://{server}:{port}: {e}")
@@ -89,7 +110,7 @@ def write_detailed_results_to_file(results, filename):
                     for value in values:
                         f.write(f"  {value}\n")
             f.write("\n")
-    print(f"Detailed results written to {filename}\n")
+    print(f"Detailed results written to {filename}")
 
 def main():
     # Attempt to connect with SSL first, then without SSL
@@ -97,12 +118,12 @@ def main():
         protocol = "SSL" if use_ssl else "non-SSL"
         print(f"Attempting to connect to {args.dc_ip} with {protocol}...")
         logging.info(f"Attempting to connect to {args.dc_ip} with {protocol}")
-
+        
         s, c, checkserver = attempt_connection(args.dc_ip, use_ssl, user, password)
-
+        
         if checkserver:
-            print("Connected successfully. Retrieving server information...")
-            logging.info("Connected successfully")
+            print(f"Connected successfully using {'authenticated' if user else 'anonymous'} bind. Retrieving server information...")
+            logging.info(f"Connected successfully using {'authenticated' if user else 'anonymous'} bind")
             print(s.info)
 
             # Extract domain components from the server's info
@@ -137,7 +158,7 @@ def main():
         else:
             print(f"Failed to connect with {protocol}.")
             logging.warning(f"Failed to connect with {protocol}.")
-
+    
     if not checkserver:
         print("Failed to connect: Server does not allow LDAP bind or invalid credentials.")
         logging.error("Failed to connect: Server does not allow LDAP bind or invalid credentials.")
