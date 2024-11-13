@@ -2,90 +2,262 @@
 
 ## Description
 
-LDAPire is designed to connect to an LDAP server (such as Active Directory), perform authentication, and enumerate users and groups. It attempts connections with and without SSL, supports both anonymous and authenticated binds, and outputs detailed information about users and groups to separate files.
+LDAPire is a comprehensive LDAP enumeration tool designed for Active Directory environments. It performs detailed enumeration of domain objects, including users, groups, and computers, with advanced handling of binary attributes and service account detection.
 
 ## Features
 
-- Attempts LDAP connection with SSL first, then without SSL if SSL fails
-- Supports both anonymous and authenticated binds
-- Authenticates with provided credentials
-- Enumerates users and groups
-- Outputs basic (sAMAccountName) and detailed information for both users and groups
-- Input validation for IP address
-- Secure password handling
-- Comprehensive logging for troubleshooting
+### Connection Handling
+- SSL/TLS support with fallback to non-SSL
+- Anonymous and authenticated bind support
+- Secure credential handling
+
+### Enumeration Capabilities
+- Complete enumeration of:
+  - Users
+  - Groups
+  - Computers
+  - All domain objects
+- Binary attribute conversion:
+  - Security Identifiers (SIDs)
+  - GUIDs
+  - Exchange attributes
+  - Other binary data
+
+### Output Files
+#### Basic Information
+- `Users.txt`: User SAM account names
+- `Groups.txt`: Group SAM account names
+- `Computers.txt`: Computer SAM account names
+- `Objects.txt`: All object SAM account names
+
+#### Detailed Information
+- `UsersDetailed.txt`: Comprehensive user attributes
+- `GroupsDetailed.txt`: Comprehensive group attributes
+- `ComputersDetailed.txt`: Comprehensive computer attributes
+- `ObjectsDetailedLdap.txt`: All domain object details
+
+#### Special Reports
+- `AllObjectDescriptions.txt`: Consolidated descriptions from all objects
+- `ServiceAccounts.txt`: Potential service accounts identified
+
+## Console Output
+
+The tool provides a clear, organized console output showing progress:
+
+```
+============================================================
+                LDAP Information Retrieval
+                  Domain Enumeration
+============================================================
+
+------------------------------------------------------------
+ Processing Users
+------------------------------------------------------------
+  ✓ Basic user names    → Users.txt
+  ✓ Detailed user info  → UsersDetailed.txt
+
+------------------------------------------------------------
+ Processing Groups
+------------------------------------------------------------
+  ✓ Basic group names   → Groups.txt
+  ✓ Detailed group info → GroupsDetailed.txt
+
+------------------------------------------------------------
+ Processing Computers
+------------------------------------------------------------
+  ✓ Basic computer names    → Computers.txt
+  ✓ Detailed computer info  → ComputersDetailed.txt
+
+------------------------------------------------------------
+ Processing All Objects
+------------------------------------------------------------
+  ✓ Basic object names     → Objects.txt
+  ✓ Detailed object info   → ObjectsDetailedLdap.txt
+
+------------------------------------------------------------
+ Processing Descriptions
+------------------------------------------------------------
+  ✓ All object descriptions → AllObjectDescriptions.txt
+
+------------------------------------------------------------
+ Searching for Service Accounts
+------------------------------------------------------------
+  🔍 Searching Users.txt
+  ✓ Found matches in Users.txt
+  🔍 Searching UsersDetailed.txt
+  ✓ Found matches in UsersDetailed.txt
+  🔍 Searching Groups.txt
+  - No matches in Groups.txt
+  ✓ Service account findings written to ServiceAccounts.txt
+  ✓ Found 5 potential matches
+
+============================================================
+                  Enumeration Complete!
+============================================================
+```
 
 ## Requirements
 
 - Python 3.x
-- python3-ldap library
+- ldap3 library
 
 ## Installation
 
-1. Ensure you have Python 3.x installed on your system.
-2. Install the required library:
-
-   ```
-   sudo apt-get install python3-ldap
-   ```
-
-   Or if you're using pip:
-
-   ```
-   pip3 install python3-ldap
-   ```
-
-Note: The installation method may vary depending on your operating system and package manager. The above commands are typically used on Debian-based systems (like Ubuntu or Kali Linux).
+1. Install Python 3.x
+2. Install required library:
+```bash
+pip3 install ldap3
+```
 
 ## Usage
 
-Run the script from the command line with the following syntax:
-
+Basic syntax:
+```bash
+python3 ldapire.py [DC_IP] [-u USERNAME] [-p PASSWORD]
 ```
-python3 pythonldap.py [DC_IP] [-u USERNAME] [-p PASSWORD]
-```
 
-- `[DC_IP]`: The IP address of the Domain Controller (required)
-- `-u USERNAME`: The username for LDAP authentication (optional)
-- `-p PASSWORD`: The password for LDAP authentication (optional)
-
-If you don't provide a username or password, the script will attempt an anonymous bind.
+Arguments:
+- `DC_IP`: Domain Controller IP (required)
+- `-u USERNAME`: Authentication username (optional)
+- `-p PASSWORD`: Authentication password (optional)
 
 Examples:
-- Authenticated bind: `python3 pythonldap.py 192.168.1.1 -u "DOMAIN\\username"`
-- Anonymous bind: `python3 pythonldap.py 192.168.1.1`
+```bash
+# Authenticated enumeration
+python3 ldapire.py 192.168.1.1 -u "DOMAIN\\username" -p "password"
 
-If no password is provided via the -p option, the script will prompt you to securely enter the password.
+# Anonymous enumeration
+python3 ldapire.py 192.168.1.1
+```
 
-## Output Files
+## Output Format
 
-The script generates four output files:
+### Basic Files
+Contains one entry per line:
+```
+user1
+user2
+user3
+```
 
-1. `usersLdap.txt`: List of user sAMAccountNames
-2. `usersLdap_detailed.txt`: Detailed information about each user
-3. `groupsLdap.txt`: List of group sAMAccountNames
-4. `groupsLdap_detailed.txt`: Detailed information about each group
+### Detailed Files
+Contains comprehensive attribute information:
+```
+DN: CN=User1,CN=Users,DC=domain,DC=local
+objectSid: S-1-5-21-xxxxxxxxx
+objectGUID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+...
+```
 
-## Logging
+### Description File
+Contains formatted object descriptions:
+```
+DN: CN=Object1,DC=domain,DC=local
+Name: Object1
+Object Class: user
+Description: This is a description
+```
 
-Logs are created in `ldap_test.log`, capturing key events such as connection attempts, errors, and success messages.
+### Service Accounts File
+Contains potential service account findings with context:
+```
+=== Potential Service Accounts Found ===
+--- Found in UsersDetailed.txt around line 45 ---
+DN: CN=svc_backup,CN=Users,DC=domain,DC=local
+...
+```
+
+## Security Features
+
+### Anonymous Bind Detection
+The tool automatically checks and reports if anonymous bind is enabled:
+```
+------------------------------------------------------------
+ Security Check
+------------------------------------------------------------
+  ⚠️  WARNING: Anonymous Bind is ENABLED
+  ⚠️  This is a security risk and should be disabled
+```
+
+### Service Account Detection
+- Searches through all output files for potential service accounts
+- Looks for common patterns: 'svc', 'service', 'srvc', 'svc_', 'service_'
+- Provides context around matches for better analysis
+- Consolidates findings in ServiceAccounts.txt
+
+## Binary Data Handling
+
+The tool properly formats various binary attributes:
+- Security Identifiers (SIDs)
+- GUIDs
+- Exchange-specific attributes
+- Other binary data types
+
+## Error Handling
+
+- Graceful handling of connection failures
+- Proper handling of binary data conversion
+- Fallback mechanisms for SSL/TLS connections
+- Informative error messages for troubleshooting
+
+## Best Practices
+
+### Usage Recommendations
+1. Always use authenticated access when possible
+2. Run with minimal privileges necessary
+3. Be mindful of network bandwidth and server load
+4. Review output files for sensitive information
+
+### Security Considerations
+1. Avoid storing credentials in scripts
+2. Use secure channels for transferring output files
+3. Clean up output files after analysis
+4. Monitor and log tool usage in sensitive environments
+
+## Troubleshooting
+
+Common issues and solutions:
+1. Connection failures
+   - Verify DC IP address
+   - Check network connectivity
+   - Ensure LDAP/LDAPS ports are accessible
+
+2. Authentication issues
+   - Verify username format (DOMAIN\username)
+   - Check credential validity
+   - Ensure user has appropriate permissions
+
+3. Output issues
+   - Check write permissions in output directory
+   - Verify disk space availability
+   - Ensure no file locks from other processes
+
+## Future Enhancements
+
+Planned features for future releases:
+- Additional binary attribute handling
+- Enhanced service account detection patterns
+- Output in multiple formats (JSON, CSV)
+- Integration with other security tools
+- Custom attribute filtering options
 
 ## Security Note
 
-This script is intended for authorized use only. Ensure you have permission to perform LDAP queries on the target server before using this tool.
-
-## Disclaimer
-
-This tool is for educational and authorized testing purposes only. The authors are not responsible for any misuse or damage caused by this program.
+This tool should only be used with proper authorization. Unauthorized LDAP enumeration may violate security policies or laws.
 
 ## Contributing
 
-Contributions, issues, and feature requests are welcome. Please open an issue or submit a pull request for any improvements or features you would like to add.
+Contributions welcome! Please submit issues and pull requests via GitHub.
 
 ## License
 
-This project is licensed under the MIT License.
+MIT License
 
 ## Author
 
 Bloodstiller
+
+## Version History
+
+- 2.0: Added comprehensive binary attribute handling, service account detection, and expanded output options
+- 1.0: Initial release with basic LDAP enumeration

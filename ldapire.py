@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-from ldap3 import Server, Connection, ALL, SUBTREE
+from ldap3 import Server, Connection, ALL, SUBTREE, ANONYMOUS
 from ldap3.core.exceptions import LDAPException
 import re
 import argparse
@@ -84,7 +84,7 @@ def write_results_to_file(results, filename):
     with open(filename, 'w') as f:
         for item in results:
             f.write(f"{item}\n")
-    print(f"Results written to {filename}\n")
+    print(f"[+] Results written to {filename}\n")
 
 def perform_ldap_search_all_attributes(connection, base_dn, search_filter):
     try:
@@ -97,20 +97,550 @@ def perform_ldap_search_all_attributes(connection, base_dn, search_filter):
         logging.error(f"Error performing LDAP search: {e}")
         return []
 
+def sid_to_str(sid):
+    """
+    Convert a binary SID (Security Identifier) to its string representation.
+    Format: S-1-5-21-xxxxxxxxxx-xxxxxxxxxx-xxxxxxxxxx-xxxx
+    
+    Args:
+        sid (bytes): Binary SID data
+        
+    Returns:
+        str: String representation of the SID or error message
+    """
+    try:
+        # Check if SID is empty or all zeros
+        if all(b == 0 for b in sid):
+            return "<all zeros>"
+
+        # Get revision number (first byte)
+        revision = int(sid[0])
+        # Get count of sub-authorities (second byte)
+        sub_authorities = int(sid[1])
+        # Get identifier authority (bytes 2-7, big endian)
+        identifier_authority = int.from_bytes(sid[2:8], byteorder='big')
+        
+        # Convert authority to hex if it's a large number
+        if identifier_authority >= 2 ** 32:
+            identifier_authority = hex(identifier_authority)
+
+        # Extract sub-authorities (remaining bytes in 4-byte chunks, little endian)
+        sub_authority = '-' + '-'.join([
+            str(int.from_bytes(sid[8 + (i * 4): 12 + (i * 4)], byteorder='little'))
+            for i in range(sub_authorities)
+        ])
+        
+        return 'S-' + str(revision) + '-' + str(identifier_authority) + sub_authority
+    except Exception as e:
+        if all(b == 0 for b in sid):
+            return "<all zeros>"
+        return f"<error converting SID: 0x{sid.hex()}>"
+
+def convert_guid(binary_guid):
+    """
+    Convert binary GUID to standard string format.
+    Format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+    
+    Args:
+        binary_guid (bytes): Binary GUID data
+        
+    Returns:
+        str: String representation of the GUID
+    """
+    try:
+        hex_guid = binary_guid.hex()
+        return f"{hex_guid[6:8]}{hex_guid[4:6]}{hex_guid[2:4]}{hex_guid[0:2]}-" \
+               f"{hex_guid[10:12]}{hex_guid[8:10]}-" \
+               f"{hex_guid[14:16]}{hex_guid[12:14]}-" \
+               f"{hex_guid[16:20]}-" \
+               f"{hex_guid[20:]}"
+    except Exception:
+        return f"<invalid GUID format: {binary_guid.hex()}>"
+
+def convert_exchange_binary(attribute_name, binary_value):
+    """
+    Convert various Exchange and AD binary attributes to readable format.
+    Handles different types of binary data based on attribute name.
+    
+    Args:
+        attribute_name (str): Name of the attribute being converted
+        binary_value (bytes): Binary data to convert
+        
+    Returns:
+        str: Converted string representation of the binary data
+    """
+    try:
+        # Handle empty or all zero values
+        if not binary_value or all(b == 0 for b in binary_value):
+            return "<all zeros>"
+            
+        # Convert based on attribute type
+        if attribute_name.lower() in ['msexchmailboxguid', 'msexcharchiveguid']:
+            # Exchange GUIDs use standard GUID format
+            return convert_guid(binary_value)
+        elif attribute_name.lower() in ['objectsid', 'msexchmasteraccountsid']:
+            # SIDs need special conversion
+            return sid_to_str(binary_value)
+        elif attribute_name.lower() in ['msexchmailboxsecuritydescriptor', 'repluptodatevector', 
+                                      'dsasignature', 'auditingpolicy']:
+            # These attributes are displayed in hex format
+            return f"0x{binary_value.hex()}"
+        else:
+            # Unknown binary attributes show their length
+            return f"<binary data length={len(binary_value)}>"
+    except Exception as e:
+        return f"<error converting {attribute_name}: {str(e)}>"
+
 def write_detailed_results_to_file(results, filename):
-    with open(filename, 'w') as f:
+    # Track which attributes were converted to hex
+    hex_converted_attrs = set()
+    
+    with open(filename, 'w', encoding='utf-8', errors='replace') as f:
         for entry in results:
-            f.write(f"DN: {entry.entry_dn}\n")
-            for attribute in entry.entry_attributes:
-                values = entry[attribute].values
-                if len(values) == 1:
-                    f.write(f"{attribute}: {values[0]}\n")
-                else:
-                    f.write(f"{attribute}:\n")
-                    for value in values:
-                        f.write(f"  {value}\n")
-            f.write("\n")
-    print(f"Detailed results written to {filename}")
+            try:
+                f.write(f"DN: {entry.entry_dn}\n")
+                for attribute in entry.entry_attributes:
+                    try:
+                        values = entry[attribute].values
+                        # Handle different types of values
+                        if isinstance(values, (list, set)):
+                            cleaned_values = []
+                            for value in values:
+                                if isinstance(value, bytes):
+                                    # Special handling for different binary attributes
+                                    if attribute.lower() == 'objectsid':
+                                        cleaned_values.append(sid_to_str(value))
+                                    elif attribute.lower() == 'objectguid':
+                                        cleaned_values.append(convert_guid(value))
+                                    elif attribute.lower() in ['msexchmailboxguid', 'msexcharchiveguid', 
+                                                            'msexchmailboxsecuritydescriptor', 'repluptodatevector',
+                                                            'msexchmasteraccountsid', 'dsasignature', 'auditingpolicy']:
+                                        result = convert_exchange_binary(attribute, value)
+                                        cleaned_values.append(result)
+                                        # Track hex converted attributes
+                                        if result.startswith('0x'):
+                                            hex_converted_attrs.add(attribute)
+                                    else:
+                                        try:
+                                            cleaned_values.append(value.decode('utf-8', errors='replace'))
+                                        except:
+                                            cleaned_values.append(f"<binary data length={len(value)}>")
+                                else:
+                                    cleaned_values.append(str(value))
+                            
+                            if len(cleaned_values) == 1:
+                                f.write(f"{attribute}: {cleaned_values[0]}\n")
+                            else:
+                                f.write(f"{attribute}:\n")
+                                for value in cleaned_values:
+                                    f.write(f"  {value}\n")
+                        else:
+                            if isinstance(values, bytes):
+                                # Special handling for different binary attributes
+                                if attribute.lower() == 'objectsid':
+                                    value_str = sid_to_str(values)
+                                elif attribute.lower() == 'objectguid':
+                                    value_str = convert_guid(values)
+                                elif attribute.lower() in ['msexchmailboxguid', 'msexcharchiveguid', 
+                                                        'msexchmailboxsecuritydescriptor', 'repluptodatevector',
+                                                        'msexchmasteraccountsid', 'dsasignature', 'auditingpolicy']:
+                                    value_str = convert_exchange_binary(attribute, values)
+                                    # Track hex converted attributes
+                                    if value_str.startswith('0x'):
+                                        hex_converted_attrs.add(attribute)
+                                else:
+                                    try:
+                                        value_str = values.decode('utf-8', errors='replace')
+                                    except:
+                                        value_str = f"<binary data length={len(values)}>"
+                            else:
+                                value_str = str(values)
+                            f.write(f"{attribute}: {value_str}\n")
+                    except Exception as e:
+                        f.write(f"{attribute}: <error reading value: {str(e)}>\n")
+                f.write("\n")
+            except Exception as e:
+                f.write(f"<error processing entry: {str(e)}>\n\n")
+        
+        # Write summary of hex-converted attributes
+        if hex_converted_attrs:
+            f.write("\n=== CONVERSION SUMMARY ===\n")
+            f.write("The following attributes were converted to hexadecimal format:\n")
+            for attr in sorted(hex_converted_attrs):
+                f.write(f"- {attr}\n")
+            
+    print(f"[+] Detailed results written to {filename}")
+
+def write_groups_to_file(results, filename):
+    """
+    Write LDAP group query results to a file with proper attribute formatting.
+    Handles binary data conversion for special attributes like SIDs and GUIDs.
+    
+    Args:
+        results: LDAP query results containing group entries
+        filename (str): Output file path
+    """
+    with open(filename, 'w', encoding='utf-8', errors='replace') as f:
+        for entry in results:
+            try:
+                f.write(f"DN: {entry.entry_dn}\n")
+                for attribute in entry.entry_attributes:
+                    try:
+                        values = entry[attribute].values
+                        # Handle multi-valued attributes
+                        if isinstance(values, (list, set)):
+                            if len(values) == 1:
+                                # Single value in a list
+                                if isinstance(values[0], bytes):
+                                    # Handle binary attributes
+                                    if attribute.lower() == 'objectsid':
+                                        f.write(f"{attribute}: {sid_to_str(values[0])}\n")
+                                    elif attribute.lower() == 'objectguid':
+                                        f.write(f"{attribute}: {convert_guid(values[0])}\n")
+                                    else:
+                                        try:
+                                            f.write(f"{attribute}: {values[0].decode('utf-8')}\n")
+                                        except:
+                                            f.write(f"{attribute}: <binary data length={len(values[0])}>\n")
+                                else:
+                                    f.write(f"{attribute}: {values[0]}\n")
+                            else:
+                                # Multiple values
+                                f.write(f"{attribute}:\n")
+                                for value in values:
+                                    if isinstance(value, bytes):
+                                        try:
+                                            f.write(f"  {value.decode('utf-8')}\n")
+                                        except:
+                                            f.write(f"  <binary data length={len(value)}>\n")
+                                    else:
+                                        f.write(f"  {value}\n")
+                        else:
+                            # Single value attributes
+                            if isinstance(values, bytes):
+                                if attribute.lower() == 'objectsid':
+                                    f.write(f"{attribute}: {sid_to_str(values)}\n")
+                                elif attribute.lower() == 'objectguid':
+                                    f.write(f"{attribute}: {convert_guid(values)}\n")
+                                else:
+                                    try:
+                                        f.write(f"{attribute}: {values.decode('utf-8')}\n")
+                                    except:
+                                        f.write(f"{attribute}: <binary data length={len(values)}>\n")
+                            else:
+                                f.write(f"{attribute}: {values}\n")
+                    except Exception as e:
+                        f.write(f"{attribute}: <error reading value: {str(e)}>\n")
+                f.write("\n")
+            except Exception as e:
+                f.write(f"<error processing entry: {str(e)}>\n\n")
+    print(f"[+] Groups written to {filename}")
+
+def write_all_descriptions_to_file(results_list, filename):
+    """
+    Extract and write description fields from all LDAP objects to a single file.
+    Only writes entries that have a description field.
+    
+    Args:
+        results_list: List of LDAP query results (users, groups, computers)
+        filename (str): Output file path
+    """
+    with open(filename, 'w', encoding='utf-8', errors='replace') as f:
+        for results in results_list:
+            for entry in results:
+                try:
+                    # Check if description exists
+                    if 'description' in entry.entry_attributes:
+                        f.write(f"DN: {entry.entry_dn}\n")
+                        
+                        # Get name (try different attributes)
+                        name = None
+                        for name_attr in ['name', 'sAMAccountName', 'cn']:
+                            if name_attr in entry.entry_attributes:
+                                name = entry[name_attr].value
+                                break
+                        f.write(f"Name: {name if name else '<no name>'}\n")
+                        
+                        # Get object class
+                        if 'objectClass' in entry.entry_attributes:
+                            obj_classes = entry['objectClass'].values
+                            if obj_classes:
+                                f.write(f"Object Class: {obj_classes[-1]}\n")
+                        
+                        # Get description
+                        descriptions = entry['description'].values
+                        if isinstance(descriptions, (list, set)):
+                            if len(descriptions) == 1:
+                                f.write(f"Description: {descriptions[0]}\n")
+                            else:
+                                f.write("Description:\n")
+                                for desc in descriptions:
+                                    f.write(f"  {desc}\n")
+                        else:
+                            f.write(f"Description: {descriptions}\n")
+                        f.write("\n")
+                except Exception as e:
+                    f.write(f"<error processing entry {entry.entry_dn}: {str(e)}>\n\n")
+    print(f"[+] All descriptions written to {filename}")
+
+def write_computers_to_file(results, filename):
+    """
+    Write LDAP computer query results to a file with proper attribute formatting.
+    Similar to group handling but specific to computer objects.
+    
+    Args:
+        results: LDAP query results containing computer entries
+        filename (str): Output file path
+    """
+    with open(filename, 'w', encoding='utf-8', errors='replace') as f:
+        for entry in results:
+            try:
+                f.write(f"DN: {entry.entry_dn}\n")
+                for attribute in entry.entry_attributes:
+                    try:
+                        values = entry[attribute].values
+                        # Handle multi-valued attributes
+                        if isinstance(values, (list, set)):
+                            if len(values) == 1:
+                                # Single value in a list
+                                if isinstance(values[0], bytes):
+                                    # Handle binary attributes
+                                    if attribute.lower() == 'objectsid':
+                                        f.write(f"{attribute}: {sid_to_str(values[0])}\n")
+                                    elif attribute.lower() == 'objectguid':
+                                        f.write(f"{attribute}: {convert_guid(values[0])}\n")
+                                    else:
+                                        try:
+                                            f.write(f"{attribute}: {values[0].decode('utf-8')}\n")
+                                        except:
+                                            f.write(f"{attribute}: <binary data length={len(values[0])}>\n")
+                                else:
+                                    f.write(f"{attribute}: {values[0]}\n")
+                            else:
+                                # Multiple values
+                                f.write(f"{attribute}:\n")
+                                for value in values:
+                                    if isinstance(value, bytes):
+                                        try:
+                                            f.write(f"  {value.decode('utf-8')}\n")
+                                        except:
+                                            f.write(f"  <binary data length={len(value)}>\n")
+                                    else:
+                                        f.write(f"  {value}\n")
+                        else:
+                            # Single value attributes
+                            if isinstance(values, bytes):
+                                if attribute.lower() == 'objectsid':
+                                    f.write(f"{attribute}: {sid_to_str(values)}\n")
+                                elif attribute.lower() == 'objectguid':
+                                    f.write(f"{attribute}: {convert_guid(values)}\n")
+                                else:
+                                    try:
+                                        f.write(f"{attribute}: {values.decode('utf-8')}\n")
+                                    except:
+                                        f.write(f"{attribute}: <binary data length={len(values)}>\n")
+                            else:
+                                f.write(f"{attribute}: {values}\n")
+                    except Exception as e:
+                        f.write(f"{attribute}: <error reading value: {str(e)}>\n")
+                f.write("\n")
+            except Exception as e:
+                f.write(f"<error processing entry: {str(e)}>\n\n")
+    print(f"[+] Computers written to {filename}")
+
+def write_basic_names_to_file(results, filename, name_attribute='sAMAccountName'):
+    """
+    Write just the SAM account names to a file.
+    
+    Args:
+        results: LDAP query results
+        filename (str): Output file path
+        name_attribute (str): Attribute to use for names (default: sAMAccountName)
+    """
+    with open(filename, 'w', encoding='utf-8', errors='replace') as f:
+        for entry in results:
+            try:
+                if name_attribute in entry.entry_attributes:
+                    name = entry[name_attribute].value
+                    if name:  # Only write if name exists
+                        f.write(f"{name}\n")
+            except Exception as e:
+                f.write(f"<error processing entry: {str(e)}>\n")
+    print(f"[+] Basic names written to {filename}")
+
+def print_banner():
+    """Print a banner with script information"""
+    print("\n" + "="*60)
+    print(" "*20 + "LDAP Information Retrieval")
+    print(" "*22 + "Domain Enumeration")
+    print("="*60 + "\n")
+
+def print_section_header(section):
+    """Print a section header"""
+    print("\n" + "-"*60)
+    print(f" {section}")
+    print("-"*60)
+
+def find_service_accounts(output_file='ServiceAccounts.txt'):
+    """
+    Search through all generated files for potential service account information.
+    Looks for 'svc' and 'service' in the content.
+    
+    Args:
+        output_file (str): Name of the file to write results to
+    """
+    print("\n-----------------------------------------------------------")
+    print(" Searching for Service Accounts")
+    print("------------------------------------------------------------")
+    
+    # List of files to search through
+    files_to_search = [
+        'Users.txt', 'UsersDetailed.txt',
+        'Groups.txt', 'GroupsDetailed.txt',
+        'Objects.txt', 'ObjectsDetailedLdap.txt',
+        'AllObjectDescriptions.txt'
+    ]
+    
+    service_accounts = set()  # Use set to avoid duplicates
+    matches_found = 0
+    
+    # Search patterns
+    patterns = ['svc', 'service', 'srvc', 'svc_', 'service_']
+    
+    with open(output_file, 'w', encoding='utf-8') as outfile:
+        outfile.write("=== Potential Service Accounts Found ===\n\n")
+        
+        for filename in files_to_search:
+            try:
+                with open(filename, 'r', encoding='utf-8', errors='ignore') as f:
+                    print(f"  🔍 Searching {filename}")
+                    lines = f.readlines()
+                    
+                    # Track if we found anything in this file
+                    found_in_file = False
+                    
+                    for line_num, line in enumerate(lines, 1):
+                        if any(pattern.lower() in line.lower() for pattern in patterns):
+                            # Get context (few lines before and after)
+                            context_start = max(0, line_num - 3)
+                            context_end = min(len(lines), line_num + 2)
+                            context = lines[context_start:context_end]
+                            
+                            # Format the entry
+                            entry = f"\n--- Found in {filename} around line {line_num} ---\n"
+                            entry += "".join(context) + "\n"
+                            
+                            if entry not in service_accounts:  # Avoid duplicates
+                                service_accounts.add(entry)
+                                found_in_file = True
+                                matches_found += 1
+                    
+                    if found_in_file:
+                        print(f"  ✓ Found matches in {filename}")
+                    else:
+                        print(f"  - No matches in {filename}")
+                        
+            except FileNotFoundError:
+                print(f"  - Skipping {filename} (not found)")
+                continue
+        
+        # Write all unique findings to the output file
+        if service_accounts:
+            outfile.writelines(sorted(service_accounts))
+            outfile.write("\n=== End of Service Accounts Search ===\n")
+            print(f"\n  ✓ Service account findings written to {output_file}")
+            print(f"  ✓ Found {matches_found} potential matches\n")
+        else:
+            outfile.write("No service accounts found.\n")
+            print("\n  - No service accounts found\n")
+
+def check_anonymous_bind(server_ip):
+    """
+    Test if anonymous bind is enabled on the LDAP server
+    
+    Args:
+        server_ip (str): IP address of the LDAP server
+        
+    Returns:
+        bool: True if anonymous bind is enabled, False otherwise
+    """
+    try:
+        # Try to bind anonymously
+        server = Server(server_ip, get_info=ALL)
+        conn = Connection(server, authentication=ANONYMOUS)
+        if conn.bind():
+            return True
+        return False
+    except Exception:
+        return False
+
+def process_ldap_results(conn, base_dn, server_ip):
+    """
+    Process LDAP query results and write to various output files.
+    """
+    print_banner()
+    
+    # Users Section
+    print_section_header("Processing Users")
+    users_filter = '(objectClass=user)'
+    conn.search(base_dn, users_filter, attributes=['*'])
+    users = conn.entries
+    write_detailed_results_to_file(users, 'UsersDetailed.txt')
+    write_basic_names_to_file(users, 'Users.txt')
+    print(f"  ✓ Basic user names    → Users.txt")
+    print(f"  ✓ Detailed user info  → UsersDetailed.txt")
+
+    # Groups Section
+    print_section_header("Processing Groups")
+    groups_filter = '(objectClass=group)'
+    conn.search(base_dn, groups_filter, attributes=['*'])
+    groups = conn.entries
+    write_groups_to_file(groups, 'GroupsDetailed.txt')
+    write_basic_names_to_file(groups, 'Groups.txt')
+    print(f"  ✓ Basic group names   → Groups.txt")
+    print(f"  ✓ Detailed group info → GroupsDetailed.txt")
+
+    # Computers Section
+    print_section_header("Processing Computers")
+    computers_filter = '(objectClass=computer)'
+    conn.search(base_dn, computers_filter, attributes=['*'])
+    computers = conn.entries
+    write_computers_to_file(computers, 'ComputersDetailed.txt')
+    write_basic_names_to_file(computers, 'Computers.txt')
+    print(f"  ✓ Basic computer names    → Computers.txt")
+    print(f"  ✓ Detailed computer info  → ComputersDetailed.txt")
+
+    # All Objects Section
+    print_section_header("Processing All Objects")
+    all_objects_filter = '(objectClass=*)'
+    conn.search(base_dn, all_objects_filter, attributes=['*'])
+    all_objects = conn.entries
+    write_detailed_results_to_file(all_objects, 'ObjectsDetailedLdap.txt')
+    write_basic_names_to_file(all_objects, 'Objects.txt')
+    print(f"  ✓ Basic object names     → Objects.txt")
+    print(f"  ✓ Detailed object info   → ObjectsDetailedLdap.txt")
+    
+    # Descriptions Section
+    print_section_header("Processing Descriptions")
+    write_all_descriptions_to_file([users, groups, computers], 'AllObjectDescriptions.txt')
+    print(f"  ✓ All object descriptions → AllObjectDescriptions.txt")
+
+    # Search for service accounts
+    find_service_accounts()
+    
+    # Security check
+    print_section_header("Security Check")
+    anon_bind = check_anonymous_bind(server_ip)
+    if anon_bind:
+        print("  ⚠️  WARNING: Anonymous Bind is ENABLED")
+        print("  ⚠️  This is a security risk and should be disabled\n")
+    else:
+        print("  ✓ Anonymous Bind is disabled\n")
+
+    # Summary
+    print("=" * 60)
+    print(" " * 20 + "Enumeration Complete!")
+    print("=" * 60 + "\n")
 
 def main():
     # Attempt to connect with SSL first, then without SSL
@@ -130,31 +660,9 @@ def main():
             domain_components = s.info.other['defaultNamingContext'][0].split(',')
             base_dn = ','.join(dc for dc in domain_components if dc.startswith('DC='))
 
-            # Search for users (sAMAccountName only)
-            print("Searching for users (sAMAccountName)...")
-            users = perform_ldap_search(c, base_dn, '(&(objectclass=user))', 'sAMAccountName')
-            write_results_to_file(users, 'usersLdap.txt')
-
-            # Search for users (all attributes)
-            print("Searching for users (all attributes)...")
-            users_detailed = perform_ldap_search_all_attributes(c, base_dn, '(&(objectclass=user))')
-            write_detailed_results_to_file(users_detailed, 'usersLdap_detailed.txt')
-
-            # Search for groups
-            print("Searching for groups...")
-            groups = perform_ldap_search(c, base_dn, '(&(objectclass=group))', 'sAMAccountName')
-            write_results_to_file(groups, 'groupsLdap.txt')
-
-            # Search for groups (all attributes)
-            print("Searching for groups (all attributes)...")
-            groups_detailed = perform_ldap_search_all_attributes(c, base_dn, '(&(objectclass=group))')
-            write_detailed_results_to_file(groups_detailed, 'groupsLdap_detailed.txt')
-
-
-            break
-
-
-
+            # Process all results
+            process_ldap_results(c, base_dn, args.dc_ip)
+            
         else:
             print(f"Failed to connect with {protocol}.")
             logging.warning(f"Failed to connect with {protocol}.")
