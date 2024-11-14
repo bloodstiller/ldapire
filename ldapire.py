@@ -660,20 +660,14 @@ def process_ldap_results(conn, base_dn, server_ip):
     
     # Get and display host/domain information
     hostname, domain_name = get_host_and_domain_info(server_ip)
-    
-    # If DNS resolution fails, try getting info from LDAP
-    if not hostname or not domain_name:
-        hostname, domain_name = get_domain_info_from_ldap(conn.server.info)
-    
     print_section_header("Target Information")
     print(f"  • IP Address  : {server_ip}")
     if hostname:
         print(f"  • Hostname    : {hostname}")
     if domain_name:
         print(f"  • Domain Name : {domain_name}")
-    if not hostname and not domain_name:
-        print("  • Could not resolve hostname and domain name")
-    
+    print()
+
     # Users Section
     print_section_header("Processing Users")
     users_filter = '(objectClass=user)'
@@ -749,6 +743,7 @@ def get_basic_server_info(dc_ip):
         print("\n------------------------------------------------------------")
         print(" Server Information")
         print("------------------------------------------------------------")
+        print(f"  • IP Address  : {dc_ip}")
         
         if hasattr(server.info, 'other'):
             info = server.info.other
