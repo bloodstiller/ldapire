@@ -817,6 +817,9 @@ def main():
             print(f"  ✓ Connected successfully using {'authenticated' if user else 'anonymous'} bind")
             logging.info(f"Connected successfully using {'authenticated' if user else 'anonymous'} bind")
             
+            # Get base_dn from server info
+            base_dn = s.info.other['defaultNamingContext'][0]
+            
             # Show anonymous bind warning if using anonymous bind
             if not user:
                 print("\n------------------------------------------------------------")
