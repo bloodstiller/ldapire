@@ -55,6 +55,18 @@ def construct_user_string(user, dc_ip):
         return user  # Fallback to just the username if domain can't be determined
 
 def attempt_connection(server, use_ssl, user, password):
+    """
+    Attempt to connect to LDAP server and verify read access
+    
+    Args:
+        server (str): Server IP or hostname
+        use_ssl (bool): Whether to use SSL/TLS
+        user (str): Username for authentication
+        password (str): Password for authentication
+        
+    Returns:
+        tuple: (Server object, Connection object, bool indicating success)
+    """
     protocol = "ldaps" if use_ssl else "ldap"
     port = 636 if use_ssl else 389
     try:
@@ -64,7 +76,16 @@ def attempt_connection(server, use_ssl, user, password):
             c = Connection(s, user=user_string, password=password, authentication='SIMPLE', auto_bind=True)
         else:
             c = Connection(s, auto_bind=True)
-        return s, c, True
+            
+        # Test for read access
+        if hasattr(s.info, 'other') and 'defaultNamingContext' in s.info.other:
+            base_dn = s.info.other['defaultNamingContext'][0]
+            c.search(base_dn, '(objectClass=*)', attributes=['cn'], size_limit=1)
+            if c.entries:
+                return s, c, True
+            
+        return s, c, False
+            
     except LDAPException as e:
         logging.error(f"Error connecting to the server with {protocol}://{server}:{port}: {e}")
         return None, None, False
@@ -779,19 +800,24 @@ def main():
         print("  • Use: -u USERNAME -p PASSWORD\n")
         sys.exit(1)
 
+    # Connection attempts header
+    print("------------------------------------------------------------")
+    print(" Connection Attempts")
+    print("------------------------------------------------------------")
+
     # Attempt to connect with SSL first, then without SSL
     for use_ssl in [True, False]:
         protocol = "SSL" if use_ssl else "non-SSL"
-        print(f"Attempting to connect to {args.dc_ip} with {protocol}...")
+        print(f"  • Attempting {protocol} connection...")
         logging.info(f"Attempting to connect to {args.dc_ip} with {protocol}")
         
         s, c, checkserver = attempt_connection(args.dc_ip, use_ssl, user, password)
         
         if checkserver:
-            print(f"Connected successfully using {'authenticated' if user else 'anonymous'} bind.")
+            print(f"  ✓ Connected successfully using {'authenticated' if user else 'anonymous'} bind")
             logging.info(f"Connected successfully using {'authenticated' if user else 'anonymous'} bind")
             
-            # Show anonymous bind warning immediately if using anonymous bind
+            # Show anonymous bind warning if using anonymous bind
             if not user:
                 print("\n------------------------------------------------------------")
                 print(" Security Warning")
@@ -799,37 +825,21 @@ def main():
                 print("  ⚠️  WARNING: Connected using Anonymous Bind")
                 print("  ⚠️  This is a security risk and should be disabled\n")
             
-            # Check if we have sufficient access
-            try:
-                # Extract domain components from the server's info
-                domain_components = s.info.other['defaultNamingContext'][0].split(',')
-                base_dn = ','.join(dc for dc in domain_components if dc.startswith('DC='))
-                
-                # Test search to verify access
-                c.search(
-                    base_dn,
-                    '(objectClass=*)',
-                    attributes=['cn'],
-                    size_limit=1
-                )
-                
-                if c.entries:
-                    # We have access, proceed with enumeration
-                    process_ldap_results(c, base_dn, args.dc_ip)
-                    return  # Exit after successful enumeration
-                else:
-                    print("Connected but no read access. Cannot enumerate objects.")
-                    logging.warning("Connected but no read access")
-            except Exception as e:
-                print(f"Connected but encountered an error: {str(e)}")
-                logging.error(f"Connection error: {str(e)}")
+            # We have confirmed access, proceed with enumeration
+            process_ldap_results(c, base_dn, args.dc_ip)
+            return  # Exit after successful enumeration
             
+        elif c:  # We got a connection but no read access
+            print("  ⚠️  Connection established but no read access")
+            logging.warning("Connected but no read access")
         else:
-            print(f"Failed to connect with {protocol}.")
-            logging.warning(f"Failed to connect with {protocol}.")
+            print(f"  ✗ Failed to connect with {protocol}")
+            logging.warning(f"Failed to connect with {protocol}")
+    
+    print()  # Add spacing before final message
     
     # If we get here, all connection attempts failed
-    print("\n------------------------------------------------------------")
+    print("------------------------------------------------------------")
     print(" Connection Failed")
     print("------------------------------------------------------------")
     print("  ⚠️  Could not establish LDAP connection")
