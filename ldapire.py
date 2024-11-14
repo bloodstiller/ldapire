@@ -574,11 +574,84 @@ def check_anonymous_bind(server_ip):
     except Exception:
         return False
 
+def get_host_and_domain_info(dc_ip):
+    """
+    Get hostname and domain information for the DC
+    
+    Args:
+        dc_ip (str): IP address of the Domain Controller
+        
+    Returns:
+        tuple: (hostname, domain_name) or (None, None) if lookup fails
+    """
+    try:
+        import socket
+        fqdn = socket.gethostbyaddr(dc_ip)[0]
+        hostname = fqdn.split('.')[0]
+        domain_name = '.'.join(fqdn.split('.')[1:])
+        return hostname, domain_name
+    except:
+        return None, None
+
+def get_domain_info_from_ldap(server_info):
+    """
+    Extract domain and hostname information from LDAP server info
+    
+    Args:
+        server_info: LDAP server info object
+        
+    Returns:
+        tuple: (hostname, domain_name) or (None, None) if not found
+    """
+    try:
+        # Try to get from serverName first
+        if hasattr(server_info, 'other') and 'serverName' in server_info.other:
+            server_name = server_info.other['serverName'][0]
+            # Extract hostname from CN=FOREST,CN=Servers,...
+            hostname = server_name.split(',')[0].replace('CN=', '')
+            
+        # Try to get from ldapServiceName if serverName failed
+        elif hasattr(server_info, 'other') and 'ldapServiceName' in server_info.other:
+            service_name = server_info.other['ldapServiceName'][0]
+            # Format: domain:hostname$@DOMAIN
+            hostname = service_name.split(':')[1].split('@')[0].replace('$', '')
+        else:
+            hostname = None
+
+        # Get domain from naming context
+        if hasattr(server_info, 'other') and 'defaultNamingContext' in server_info.other:
+            naming_context = server_info.other['defaultNamingContext'][0]
+            # Extract DC components and join them
+            domain_parts = [dc.replace('DC=', '') for dc in naming_context.split(',') if dc.startswith('DC=')]
+            domain_name = '.'.join(domain_parts)
+        else:
+            domain_name = None
+
+        return hostname, domain_name
+    except:
+        return None, None
+
 def process_ldap_results(conn, base_dn, server_ip):
     """
     Process LDAP query results and write to various output files.
     """
     print_banner()
+    
+    # Get and display host/domain information
+    hostname, domain_name = get_host_and_domain_info(server_ip)
+    
+    # If DNS resolution fails, try getting info from LDAP
+    if not hostname or not domain_name:
+        hostname, domain_name = get_domain_info_from_ldap(conn.server.info)
+    
+    print_section_header("Target Information")
+    print(f"  • IP Address  : {server_ip}")
+    if hostname:
+        print(f"  • Hostname    : {hostname}")
+    if domain_name:
+        print(f"  • Domain Name : {domain_name}")
+    if not hostname and not domain_name:
+        print("  • Could not resolve hostname and domain name")
     
     # Users Section
     print_section_header("Processing Users")
@@ -635,14 +708,77 @@ def process_ldap_results(conn, base_dn, server_ip):
         print("  ⚠️  WARNING: Anonymous Bind is ENABLED")
         print("  ⚠️  This is a security risk and should be disabled\n")
     else:
-        print("  ✓ Anonymous Bind is disabled\n")
+        print("  ✓ Anonymous Bind is DISABLED")
+        print("  ✓ This is the recommended secure configuration\n")
 
     # Summary
     print("=" * 60)
     print(" " * 20 + "Enumeration Complete!")
     print("=" * 60 + "\n")
 
+def get_basic_server_info(dc_ip):
+    """
+    Get basic server information that's typically available without authentication
+    """
+    try:
+        server = Server(dc_ip, get_info=ALL)
+        conn = Connection(server)
+        conn.bind()
+        
+        print("\n------------------------------------------------------------")
+        print(" Server Information")
+        print("------------------------------------------------------------")
+        
+        if hasattr(server.info, 'other'):
+            info = server.info.other
+            
+            # Get naming context
+            if 'defaultNamingContext' in info:
+                domain_parts = [dc.replace('DC=', '') for dc in info['defaultNamingContext'][0].split(',') 
+                              if dc.startswith('DC=')]
+                print(f"  • Domain Name : {'.'.join(domain_parts)}")
+            
+            # Get server name
+            if 'serverName' in info:
+                hostname = info['serverName'][0].split(',')[0].replace('CN=', '')
+                print(f"  • Server Name : {hostname}")
+            elif 'ldapServiceName' in info:
+                hostname = info['ldapServiceName'][0].split(':')[1].split('@')[0].replace('$', '')
+                print(f"  • Server Name : {hostname}")
+            
+            # Get forest functional level if available
+            if 'forestFunctionality' in info:
+                print(f"  • Forest Level: {info['forestFunctionality'][0]}")
+            
+            # Get domain functional level if available
+            if 'domainFunctionality' in info:
+                print(f"  • Domain Level: {info['domainFunctionality'][0]}")
+            
+        print()  # Empty line for spacing
+        
+    except Exception as e:
+        print("  • Could not retrieve server information")
+        logging.error(f"Error getting server info: {str(e)}")
+
 def main():
+    """Main function to handle LDAP enumeration"""
+    # Get basic server information first (usually available without auth)
+    get_basic_server_info(args.dc_ip)
+    
+    # Check if anonymous bind is enabled
+    anon_enabled = check_anonymous_bind(args.dc_ip)
+    
+    # If no credentials provided and anonymous bind is disabled, exit early
+    if not user and not anon_enabled:
+        print("------------------------------------------------------------")
+        print(" Access Denied")
+        print("------------------------------------------------------------")
+        print("  ✓ Anonymous Bind is DISABLED (Secure Configuration)")
+        print("  • No credentials provided")
+        print("  • Please provide valid credentials to enumerate")
+        print("  • Use: -u USERNAME -p PASSWORD\n")
+        sys.exit(1)
+
     # Attempt to connect with SSL first, then without SSL
     for use_ssl in [True, False]:
         protocol = "SSL" if use_ssl else "non-SSL"
@@ -652,24 +788,57 @@ def main():
         s, c, checkserver = attempt_connection(args.dc_ip, use_ssl, user, password)
         
         if checkserver:
-            print(f"Connected successfully using {'authenticated' if user else 'anonymous'} bind. Retrieving server information...")
+            print(f"Connected successfully using {'authenticated' if user else 'anonymous'} bind.")
             logging.info(f"Connected successfully using {'authenticated' if user else 'anonymous'} bind")
-            print(s.info)
-
-            # Extract domain components from the server's info
-            domain_components = s.info.other['defaultNamingContext'][0].split(',')
-            base_dn = ','.join(dc for dc in domain_components if dc.startswith('DC='))
-
-            # Process all results
-            process_ldap_results(c, base_dn, args.dc_ip)
+            
+            # Show anonymous bind warning immediately if using anonymous bind
+            if not user:
+                print("\n------------------------------------------------------------")
+                print(" Security Warning")
+                print("------------------------------------------------------------")
+                print("  ⚠️  WARNING: Connected using Anonymous Bind")
+                print("  ⚠️  This is a security risk and should be disabled\n")
+            
+            # Check if we have sufficient access
+            try:
+                # Extract domain components from the server's info
+                domain_components = s.info.other['defaultNamingContext'][0].split(',')
+                base_dn = ','.join(dc for dc in domain_components if dc.startswith('DC='))
+                
+                # Test search to verify access
+                c.search(
+                    base_dn,
+                    '(objectClass=*)',
+                    attributes=['cn'],
+                    size_limit=1
+                )
+                
+                if c.entries:
+                    # We have access, proceed with enumeration
+                    process_ldap_results(c, base_dn, args.dc_ip)
+                    return  # Exit after successful enumeration
+                else:
+                    print("Connected but no read access. Cannot enumerate objects.")
+                    logging.warning("Connected but no read access")
+            except Exception as e:
+                print(f"Connected but encountered an error: {str(e)}")
+                logging.error(f"Connection error: {str(e)}")
             
         else:
             print(f"Failed to connect with {protocol}.")
             logging.warning(f"Failed to connect with {protocol}.")
     
-    if not checkserver:
-        print("Failed to connect: Server does not allow LDAP bind or invalid credentials.")
-        logging.error("Failed to connect: Server does not allow LDAP bind or invalid credentials.")
+    # If we get here, all connection attempts failed
+    print("\n------------------------------------------------------------")
+    print(" Connection Failed")
+    print("------------------------------------------------------------")
+    print("  ⚠️  Could not establish LDAP connection")
+    print("  • Anonymous bind may be disabled (good security practice)")
+    print("  • Credentials may be incorrect")
+    print("  • Server may be unreachable")
+    print("  • LDAP/LDAPS ports may be filtered\n")
+    logging.error("All connection attempts failed")
+    sys.exit(1)
 
 if __name__ == "__main__":
     main()
